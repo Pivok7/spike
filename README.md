@@ -7,7 +7,7 @@ Experimental command line interface
 
 You will need:
 
-* Zig compiler (latest stable version)
+* Zig compiler 0.15.1
 
 
 ## Third party libraries used in this project
