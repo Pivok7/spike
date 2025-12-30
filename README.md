@@ -1,13 +1,13 @@
 # spike
 
-Experimental command line interface
+Experimental terminal
 
 
 ## Building
 
 You will need:
 
-* Zig compiler (latest stable version)
+* Zig 0.15.2
 
 
 ## Third party libraries used in this project
