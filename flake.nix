@@ -19,8 +19,7 @@
         };
 
         _nativeBuildInputs = with pkgs; [
-          makeWrapper
-          wayland-scanner
+          zig_0_15
         ];
 
         _buildInputs = with pkgs; [
