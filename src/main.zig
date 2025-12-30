@@ -9,7 +9,7 @@ pub fn main() !void {
     defer sdl3.shutdown();
 
     // Initialize SDL with subsystems you need here.
-    const init_flags = sdl3.InitFlags{};
+    const init_flags = sdl3.InitFlags{ .video = true };
     try sdl3.init(init_flags);
     defer sdl3.quit(init_flags);
 
@@ -42,8 +42,8 @@ pub fn main() !void {
             surface.mapRgb(0, 200, 100),
         );
         for (0..100) |i| {
-            try surface.writePixel(10, i, .{ .r = 10, .g = 20, .b = 10, .a = 100 });
-            try surface.writePixel(11, i, .{ .r = 10, .g = 20, .b = 10, .a = 100 });
+            try surface.writePixel(10, i, .{ .r = 10, .g = 20, .b = 10, .a = 255 });
+            try surface.writePixel(11, i, .{ .r = 10, .g = 20, .b = 10, .a = 255 });
         }
         try window.updateSurface();
 
