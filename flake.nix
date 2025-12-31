@@ -26,6 +26,8 @@
           libGL
           libxkbcommon
           wayland
+	  sdl3
+	  sdl3-ttf
         ];
       in
       {

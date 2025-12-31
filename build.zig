@@ -18,6 +18,8 @@ pub fn build(b: *std.Build) void {
     const sdl3_dep = b.dependency("sdl3", .{
         .target = target,
         .optimize = optimize,
+
+        .ext_ttf = true,
     });
     exe.root_module.addImport("sdl3", sdl3_dep.module("sdl3"));
 

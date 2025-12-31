@@ -1,9 +1,8 @@
 const sdl3 = @import("sdl3");
 const std = @import("std");
 
-const fps = 60;
-const screen_width = 640;
-const screen_height = 480;
+const screen_width = 800;
+const screen_height = 600;
 
 pub fn main() !void {
     defer sdl3.shutdown();
@@ -12,6 +11,9 @@ pub fn main() !void {
     const init_flags = sdl3.InitFlags{ .video = true };
     try sdl3.init(init_flags);
     defer sdl3.quit(init_flags);
+
+    try sdl3.ttf.init();
+    defer sdl3.ttf.quit();
 
     // Initial window setup.
     const window = try sdl3.video.Window.init(
@@ -24,28 +26,25 @@ pub fn main() !void {
     );
     defer window.deinit();
 
-    // Useful for limiting the FPS and getting the delta time.
-    var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = fps } };
+    const renderer = try sdl3.render.Renderer.init(window, null);
+    defer renderer.deinit();
+
+    try renderer.setVSync(.{ .on_each_num_refresh = 1 });
 
     var quit = false;
     while (!quit) {
+        // Render
+        try renderer.setDrawColor(.{ .r = 0, .g = 0, .b = 0, .a = 255 });
+        try renderer.clear();
 
-        // Delay to limit the FPS, returned delta time not needed.
-        const dt = fps_capper.delay();
-        _ = dt;
+        try renderer.setDrawColor(.{ .r = 255, .g = 255, .b = 255, .a = 255 });
+        const cwd = std.fs.cwd();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const pwd = try cwd.realpath(".", &buf);
+        buf[@min(pwd.len, std.fs.max_path_bytes - 1)] = 0; // Null terminate
+        try renderer.renderDebugText(.{ .x = 0.0, .y = 0.0 }, @ptrCast(pwd));
 
-        // Update logic.
-        const surface = try window.getSurface();
-        try surface.fillRect(null, surface.mapRgb(128, 30, 255));
-        try surface.fillRect(
-            .{ .x = 0, .y = 0, .w = 100, .h = 100 },
-            surface.mapRgb(0, 200, 100),
-        );
-        for (0..100) |i| {
-            try surface.writePixel(10, i, .{ .r = 10, .g = 20, .b = 10, .a = 255 });
-            try surface.writePixel(11, i, .{ .r = 10, .g = 20, .b = 10, .a = 255 });
-        }
-        try window.updateSurface();
+        try renderer.present();
 
         // Event logic.
         while (sdl3.events.poll()) |event|
