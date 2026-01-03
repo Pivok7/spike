@@ -2,15 +2,58 @@ const sdl3 = @import("sdl3");
 const std = @import("std");
 const colors = @import("colors.zig");
 
+const Allocator = std.mem.Allocator;
+const Colors = colors.Colors;
+
 const default_font = @embedFile("fonts/Hack-Regular.ttf");
 const default_font_size = 16.0;
-
-const Colors = colors.Colors;
 
 const screen_width = 800;
 const screen_height = 600;
 
+fn shell(allocator: Allocator) ![]const u8 {
+    // Init terminal
+
+    var a = std.process.Child.init(&[_][]const u8{
+        "bash"
+    }, allocator);
+    a.stdout_behavior = .Pipe;
+    a.stdin_behavior = .Pipe;
+    a.stderr_behavior = .Pipe;
+    try a.spawn();
+
+    var rbuf: [1]u8 = undefined;
+    var r = a.stdout.?.reader(&rbuf);
+    const rr = &r.interface;
+
+    var w = a.stdin.?.writer(&.{});
+    const ww = &w.interface;
+
+    try ww.writeAll("pwd\n");
+    try ww.writeAll("exit\n");
+
+    var arr = std.ArrayList(u8){};
+
+    while (true) {
+        const b = rr.takeByte() catch break;
+        try arr.append(allocator, b);
+    }
+
+    a.stdin = null;
+    a.stdout = null;
+    a.stderr = null;
+    _ = try a.kill();
+
+    std.debug.print("{s}", .{arr.items});
+
+    return try arr.toOwnedSlice(allocator);
+}
+
 pub fn main() !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     defer sdl3.shutdown();
 
     // Initialize SDL with subsystems you need here.
@@ -44,13 +87,10 @@ pub fn main() !void {
     );
     defer font.deinit();
 
-    const cwd = std.fs.cwd();
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const pwd = try cwd.realpath(".", &buf);
-    // Null terminate
-    buf[@min(pwd.len, std.fs.max_path_bytes - 1)] = 0;
+    const shell_output = try shell(allocator);
 
-    const text = try font.renderTextBlended(pwd, Colors.white().toTTF());
+    const text = try font.renderTextBlended(shell_output, Colors.white().toTTF());
+    allocator.free(shell_output);
 
     const texture_text = try renderer.createTextureFromSurface(text);
     defer texture_text.deinit();
