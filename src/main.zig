@@ -1,6 +1,7 @@
 const sdl3 = @import("sdl3");
 const std = @import("std");
 const colors = @import("colors.zig");
+const pty = @import("pty.zig");
 
 const Allocator = std.mem.Allocator;
 const Colors = colors.Colors;
@@ -11,40 +12,31 @@ const default_font_size = 16.0;
 const screen_width = 800;
 const screen_height = 600;
 
-fn shell(allocator: Allocator) ![]const u8 {
-    // Init terminal
-
-    var a = std.process.Child.init(&[_][]const u8{
-        "bash"
-    }, allocator);
-    a.stdout_behavior = .Pipe;
-    a.stdin_behavior = .Pipe;
-    a.stderr_behavior = .Pipe;
-    try a.spawn();
-
-    var rbuf: [1]u8 = undefined;
-    var r = a.stdout.?.reader(&rbuf);
-    const rr = &r.interface;
-
-    var w = a.stdin.?.writer(&.{});
-    const ww = &w.interface;
-
-    try ww.writeAll("pwd\n");
-    try ww.writeAll("exit\n");
+fn shell(allocator: Allocator, fd: std.fs.File) ![]const u8 {
+    var fs_writer = fd.writer(&[_]u8{});
+    const writer = &fs_writer.interface;
 
     var arr = std.ArrayList(u8){};
+    defer arr.deinit(allocator);
+
+    var buf: [1024]u8 = undefined;
+    var fs_reader = fd.reader(&buf);
+    const reader = &fs_reader.interface;
 
     while (true) {
-        const b = rr.takeByte() catch break;
+        const b = reader.takeByte() catch break;
         try arr.append(allocator, b);
+        if (b == '$') break;
     }
 
-    a.stdin = null;
-    a.stdout = null;
-    a.stderr = null;
-    _ = try a.kill();
+    try writer.writeAll("ls\n");
+    try writer.flush();
 
-    std.debug.print("{s}", .{arr.items});
+    while (true) {
+        const b = reader.takeByte() catch break;
+        try arr.append(allocator, b);
+        if (b == '$') break;
+    }
 
     return try arr.toOwnedSlice(allocator);
 }
@@ -87,41 +79,79 @@ pub fn main() !void {
     );
     defer font.deinit();
 
-    const shell_output = try shell(allocator);
+    // PTY
+    const res = try pty.forkpty();
 
-    const text = try font.renderTextBlended(shell_output, Colors.white().toTTF());
-    allocator.free(shell_output);
-
-    const texture_text = try renderer.createTextureFromSurface(text);
-    defer texture_text.deinit();
-
-    text.deinit();
-
-    var quit = false;
-    while (!quit) {
-        // Render
-        try renderer.setDrawColor(Colors.black().toPixels());
-        try renderer.clear();
-
-        try renderer.renderTexture(
-            texture_text,
+    if (res.slave == 0) {
+        const args = [_:null]?[*:0]const u8{
+            "bash".ptr,
             null,
-            .{
-                .x = 0.0,
-                .y = 0.0,
-                .w = @floatFromInt(texture_text.getWidth()),
-                .h = @floatFromInt(texture_text.getHeight()),
+        };
+
+        var envmap = try std.process.getEnvMap(allocator);
+        defer envmap.deinit();
+
+        const env = [_:null]?[*:0]const u8{
+            null,
+        };
+
+        std.posix.execvpeZ(
+            args[0].?,
+            &args,
+            &env
+        ) catch {};
+    } else {
+        const shell_output = try shell(allocator, res.master);
+
+        var text_arr = std.ArrayList(sdl3.render.Texture){};
+        defer {
+            for (text_arr.items) |text| {
+                text.deinit();
             }
-        );
+            text_arr.deinit(allocator);
+        }
 
-        try renderer.present();
+        var iter = std.mem.splitScalar(u8, shell_output, '\n');
+        while (iter.next()) |line| {
+            if (line.len == 0) continue;
+            const surface = try font.renderTextBlended(line, Colors.white().toTTF());
+            const texture = try renderer.createTextureFromSurface(surface);
+            surface.deinit();
 
-        // Event logic.
-        while (sdl3.events.poll()) |event|
-            switch (event) {
-                .quit => quit = true,
-                .terminating => quit = true,
-                else => {},
-            };
+            std.debug.print("{s}\n", .{line});
+            try text_arr.append(allocator, texture);
+        }
+
+        allocator.free(shell_output);
+
+        var quit = false;
+        while (!quit) {
+            // Render
+            try renderer.setDrawColor(Colors.black().toPixels());
+            try renderer.clear();
+
+            for (text_arr.items, 0..) |text, i| {
+                try renderer.renderTexture(
+                    text,
+                    null,
+                    .{
+                        .x = 0.0,
+                        .y = 0.0 + @as(f32, @floatFromInt(i)) * @as(f32, @floatFromInt(text.getHeight())),
+                        .w = @floatFromInt(text.getWidth()),
+                        .h = @floatFromInt(text.getHeight()),
+                    }
+                );
+            }
+
+            try renderer.present();
+
+            // Event logic.
+            while (sdl3.events.poll()) |event|
+                switch (event) {
+                    .quit => quit = true,
+                    .terminating => quit = true,
+                    else => {},
+                };
+        }
     }
 }

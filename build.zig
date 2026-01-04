@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    // SDL3
     const sdl3_dep = b.dependency("sdl3", .{
         .target = target,
         .optimize = optimize,
@@ -22,6 +23,11 @@ pub fn build(b: *std.Build) void {
         .ext_ttf = true,
     });
     exe.root_module.addImport("sdl3", sdl3_dep.module("sdl3"));
+
+    exe.root_module.link_libc = true;
+
+    // library for forkpty
+    exe.root_module.linkSystemLibrary("util", .{});
 
     b.installArtifact(exe);
 
