@@ -104,8 +104,6 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
     var glyph_map = GlyphMap.init(allocator, font, renderer);
     defer glyph_map.deinit();
 
-    _ = try glyph_map.getTexture(100);
-
     var text_buffer = std.ArrayList(std.ArrayList(u8)){};
     defer {
         for (text_buffer.items) |*item| {
