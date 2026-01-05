@@ -2,10 +2,20 @@ const std = @import("std");
 
 const c = @cImport({
     @cInclude("pty.h");
+    @cInclude("fcntl.h");
 });
 
+pub fn fdBlock(fd: std.posix.fd_t, block: bool) !void {
+    const flags = try std.posix.fcntl(fd, c.F_GETFL, 0);
+    if (block) {
+        _ = try std.posix.fcntl(fd, c.F_SETFL, (flags | c.O_NONBLOCK) - c.O_NONBLOCK);
+    } else {
+        _ = try std.posix.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK);
+    }
+}
+
 pub fn forkpty() !struct{
-    master: std.fs.File,
+    master: std.posix.fd_t,
     slave: std.posix.fd_t,
 } {
     var master: std.posix.fd_t = undefined;
@@ -21,7 +31,7 @@ pub fn forkpty() !struct{
     }
 
     return .{
-        .master = .{ .handle = master },
+        .master = master,
         .slave = @intCast(slave),
     };
 }

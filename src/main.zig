@@ -12,33 +12,81 @@ const default_font_size = 16.0;
 const screen_width = 800;
 const screen_height = 600;
 
-fn shell(allocator: Allocator, fd: std.fs.File) ![]const u8 {
-    var fs_writer = fd.writer(&[_]u8{});
-    const writer = &fs_writer.interface;
+// TODO: Remove me later!
+var mirror_shell: bool = false;
 
-    var arr = std.ArrayList(u8){};
-    defer arr.deinit(allocator);
+fn shellWrite(
+    string: []const u8,
+    fd: std.posix.fd_t,
+) !void {
+    var written: usize = 0;
 
-    var buf: [1024]u8 = undefined;
-    var fs_reader = fd.reader(&buf);
-    const reader = &fs_reader.interface;
+    while (written < string.len) {
+        const w = try std.posix.write(
+            fd,
+            string[written..],
+        );
+        written += w;
+    }
+}
+
+fn shellRead(
+    allocator: Allocator,
+    buf: *std.ArrayList(std.ArrayList(u8)),
+    fd: std.posix.fd_t,
+) !bool {
+    var read_anything: bool = false;
+    var rbuf: [4096]u8 = undefined;
 
     while (true) {
-        const b = reader.takeByte() catch break;
-        try arr.append(allocator, b);
-        if (b == '$') break;
+        const rlen = std.posix.read(fd, &rbuf) catch break;
+        const read = rbuf[0..rlen];
+
+        if (mirror_shell) {
+            std.debug.print("{s}", .{read});
+        }
+
+        if (rlen > 0) read_anything = true;
+
+        for (read) |c| {
+            const buf_end = &buf.items[buf.items.len - 1];
+            // Check 'line feed' or 'carriage return'
+            if (c == '\x0a' or c == '\x0d') {
+                try buf.append(allocator, .{});
+                continue;
+            }
+            // Backspace
+            if (c == '\x08') {
+                _ = buf_end.pop();
+                continue;
+            }
+            try buf_end.append(allocator, c);
+        }
     }
 
-    try writer.writeAll("ls\n");
-    try writer.flush();
+    return read_anything;
+}
 
-    while (true) {
-        const b = reader.takeByte() catch break;
-        try arr.append(allocator, b);
-        if (b == '$') break;
+fn genText(
+    allocator: Allocator,
+    font: sdl3.ttf.Font,
+    renderer: sdl3.render.Renderer,
+    text_buf: *std.ArrayList(std.ArrayList(u8)),
+    textures: *std.ArrayList(sdl3.render.Texture),
+) !void {
+    for (textures.items) |line| {
+        line.deinit();
     }
+    textures.clearAndFree(allocator);
 
-    return try arr.toOwnedSlice(allocator);
+    for (text_buf.items) |*line| {
+        if (line.items.len == 0) continue;
+        const surface = try font.renderTextBlended(line.items, Colors.white().toTTF());
+        const texture = try renderer.createTextureFromSurface(surface);
+        surface.deinit();
+
+        try textures.append(allocator, texture);
+    }
 }
 
 pub fn main() !void {
@@ -85,23 +133,34 @@ pub fn main() !void {
     if (res.slave == 0) {
         const args = [_:null]?[*:0]const u8{
             "bash".ptr,
+            "--norc".ptr,
             null,
         };
 
         var envmap = try std.process.getEnvMap(allocator);
-        defer envmap.deinit();
-
-        const env = [_:null]?[*:0]const u8{
-            null,
-        };
+        const env = try std.process.createNullDelimitedEnvMap(
+            allocator,
+            &envmap,
+        );
+        envmap.deinit();
 
         std.posix.execvpeZ(
             args[0].?,
             &args,
-            &env
+            env
         ) catch {};
     } else {
-        const shell_output = try shell(allocator, res.master);
+        const fd = res.master;
+        try pty.fdBlock(fd, false);
+
+        var text_buffer = std.ArrayList(std.ArrayList(u8)){};
+        defer {
+            for (text_buffer.items) |*item| {
+                item.deinit(allocator);
+            }
+            text_buffer.deinit(allocator);
+        }
+        try text_buffer.append(allocator, .{});
 
         var text_arr = std.ArrayList(sdl3.render.Texture){};
         defer {
@@ -111,21 +170,41 @@ pub fn main() !void {
             text_arr.deinit(allocator);
         }
 
-        var iter = std.mem.splitScalar(u8, shell_output, '\n');
-        while (iter.next()) |line| {
-            if (line.len == 0) continue;
-            const surface = try font.renderTextBlended(line, Colors.white().toTTF());
-            const texture = try renderer.createTextureFromSurface(surface);
-            surface.deinit();
-
-            std.debug.print("{s}\n", .{line});
-            try text_arr.append(allocator, texture);
-        }
-
-        allocator.free(shell_output);
+        try sdl3.keyboard.startTextInput(window);
 
         var quit = false;
         while (!quit) {
+            while (sdl3.events.poll()) |e| {
+                switch (e) {
+                    .quit => quit = true,
+                    .terminating => quit = true,
+                    .text_input => |input| {
+                        try shellWrite(input.text, fd);
+                    },
+                    .key_down => |keyboard| {
+                        if (keyboard.key) |key| {
+                            switch (key) {
+                                .escape => quit = true,
+                                .return_key => try shellWrite("\n", fd),
+                                .backspace => try shellWrite("\x7F", fd),
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+
+            if (try shellRead(allocator, &text_buffer, fd)) {
+                try genText(
+                    allocator,
+                    font,
+                    renderer,
+                    &text_buffer,
+                    &text_arr,
+                );
+            }
+
             // Render
             try renderer.setDrawColor(Colors.black().toPixels());
             try renderer.clear();
@@ -144,14 +223,8 @@ pub fn main() !void {
             }
 
             try renderer.present();
-
-            // Event logic.
-            while (sdl3.events.poll()) |event|
-                switch (event) {
-                    .quit => quit = true,
-                    .terminating => quit = true,
-                    else => {},
-                };
         }
+
+        try sdl3.keyboard.stopTextInput(window);
     }
 }
