@@ -2,6 +2,8 @@ const sdl3 = @import("sdl3");
 const std = @import("std");
 const colors = @import("colors.zig");
 const pty = @import("pty.zig");
+const shell = @import("shell.zig");
+const GlyphMap = @import("font.zig").GlyphMap;
 
 const Allocator = std.mem.Allocator;
 const Colors = colors.Colors;
@@ -12,92 +14,62 @@ const default_font_size = 16.0;
 const screen_width = 800;
 const screen_height = 600;
 
-// TODO: Remove me later!
-var mirror_shell: bool = false;
+const Cursor = struct {
+    width: usize,
+    height: usize,
 
-fn shellWrite(
-    string: []const u8,
-    fd: std.posix.fd_t,
-) !void {
-    var written: usize = 0;
+    x: usize,
+    y: usize,
 
-    while (written < string.len) {
-        const w = try std.posix.write(
-            fd,
-            string[written..],
-        );
-        written += w;
+    const Self = @This();
+
+    pub fn new(width: usize, height: usize) Self {
+        return .{
+            .width = width,
+            .height = height,
+            .x = 0,
+            .y = 0,
+        };
     }
+
+    pub fn next(self: *Self) void {
+        self.x += 1;
+    }
+
+    pub fn newline(self: *Self) void {
+        self.x = 0;
+        self.y += 1;
+    }
+
+    pub fn move(self: *Self, x: usize, y: usize) void {
+        self.x = x;
+        self.y = y;
+    }
+};
+
+fn slave(allocator: Allocator) !void {
+    const args = [_:null]?[*:0]const u8{
+        "bash".ptr,
+        "--norc".ptr,
+        null,
+    };
+
+    var envmap = try std.process.getEnvMap(allocator);
+    const env = try std.process.createNullDelimitedEnvMap(
+        allocator,
+        &envmap,
+    );
+    defer allocator.free(env);
+    envmap.deinit();
+
+    std.posix.execvpeZ(
+        args[0].?,
+        &args,
+        env
+    ) catch {};
 }
 
-fn shellRead(
-    allocator: Allocator,
-    buf: *std.ArrayList(std.ArrayList(u8)),
-    fd: std.posix.fd_t,
-) !bool {
-    var read_anything: bool = false;
-    var rbuf: [4096]u8 = undefined;
-
-    while (true) {
-        const rlen = std.posix.read(fd, &rbuf) catch break;
-        const read = rbuf[0..rlen];
-
-        if (mirror_shell) {
-            std.debug.print("{s}", .{read});
-        }
-
-        if (rlen > 0) read_anything = true;
-
-        for (read) |c| {
-            const buf_end = &buf.items[buf.items.len - 1];
-            // Check 'line feed' or 'carriage return'
-            if (c == '\x0a') {
-                try buf.append(allocator, .{});
-                continue;
-            }
-            // TODO: Check this
-            if (c == '\x0d') continue;
-            // Backspace
-            if (c == '\x08') {
-                _ = buf_end.pop();
-                continue;
-            }
-            try buf_end.append(allocator, c);
-        }
-    }
-
-    return read_anything;
-}
-
-fn genText(
-    allocator: Allocator,
-    font: sdl3.ttf.Font,
-    renderer: sdl3.render.Renderer,
-    text_buf: *std.ArrayList(std.ArrayList(u8)),
-    textures: *std.ArrayList(sdl3.render.Texture),
-) !void {
-    for (textures.items) |line| {
-        line.deinit();
-    }
-    textures.clearAndFree(allocator);
-
-    const boundary = text_buf.items.len - @min(32, text_buf.items.len);
-
-    for (text_buf.items[boundary..]) |*line| {
-        if (line.items.len == 0) continue;
-        const surface = try font.renderTextBlended(line.items, Colors.white().toTTF());
-        const texture = try renderer.createTextureFromSurface(surface);
-        surface.deinit();
-
-        try textures.append(allocator, texture);
-    }
-}
-
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
     defer sdl3.shutdown();
 
     // Initialize SDL with subsystems you need here.
@@ -113,9 +85,7 @@ pub fn main() !void {
         "Spike",
         screen_width,
         screen_height,
-        .{
-            .resizable = true
-        },
+        .{ .resizable = true },
     );
     defer window.deinit();
 
@@ -131,104 +101,113 @@ pub fn main() !void {
     );
     defer font.deinit();
 
+    var glyph_map = GlyphMap.init(allocator, font, renderer);
+    defer glyph_map.deinit();
+
+    _ = try glyph_map.getTexture(100);
+
+    var text_buffer = std.ArrayList(std.ArrayList(u8)){};
+    defer {
+        for (text_buffer.items) |*item| {
+            item.deinit(allocator);
+        }
+        text_buffer.deinit(allocator);
+    }
+    try text_buffer.append(allocator, .{});
+
+    var text_arr = std.ArrayList(sdl3.render.Texture){};
+    defer {
+        for (text_arr.items) |text| {
+            text.deinit();
+        }
+        text_arr.deinit(allocator);
+    }
+
+    try sdl3.keyboard.startTextInput(window);
+
+    const glyph_zero = try glyph_map.getTexture(0x30) orelse return;
+    var cursor = Cursor.new(
+        glyph_zero.getWidth(),
+        glyph_zero.getHeight()
+    );
+
+    var quit = false;
+    while (!quit) {
+        while (sdl3.events.poll()) |e| {
+            switch (e) {
+                .quit => quit = true,
+                .terminating => quit = true,
+                .text_input => |input| {
+                    try shell.write(input.text, fd);
+                },
+                .key_down => |keyboard| {
+                    if (keyboard.key) |key| {
+                        switch (key) {
+                            .escape => quit = true,
+                            .return_key => try shell.write("\n", fd),
+                            .backspace => try shell.write("\x7F", fd),
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (try shell.read(allocator, &text_buffer, fd)) {
+        }
+
+        // Render
+        try renderer.setDrawColor(Colors.black().toPixels());
+        try renderer.clear();
+
+        cursor.move(0, 0);
+
+        _, const window_height = try window.getSize();
+        const display_boundary = @divFloor(window_height, cursor.height) - 1;
+
+        for (text_buffer.items, 0..) |line, i| {
+            if (i + display_boundary < text_buffer.items.len) continue;
+            defer cursor.newline();
+
+            for (line.items) |c| {
+                defer cursor.next();
+
+                const texture = try glyph_map.getTexture(c) orelse continue;
+
+                try renderer.renderTexture(
+                    texture,
+                    null,
+                    .{
+                        .x = @floatFromInt(cursor.x * cursor.width),
+                        .y = @floatFromInt(cursor.y * cursor.height),
+                        .w = @floatFromInt(texture.getWidth()),
+                        .h = @floatFromInt(texture.getHeight()),
+                    }
+                );
+            }
+        }
+
+        try renderer.present();
+    }
+
+    try sdl3.keyboard.stopTextInput(window);
+}
+
+pub fn main() !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+
     // PTY
     const res = try pty.forkpty();
 
     if (res.slave == 0) {
-        const args = [_:null]?[*:0]const u8{
-            "bash".ptr,
-            "--norc".ptr,
-            null,
-        };
-
-        var envmap = try std.process.getEnvMap(allocator);
-        const env = try std.process.createNullDelimitedEnvMap(
-            allocator,
-            &envmap,
-        );
-        envmap.deinit();
-
-        std.posix.execvpeZ(
-            args[0].?,
-            &args,
-            env
-        ) catch {};
+        try slave(allocator);
     } else {
         const fd = res.master;
         try pty.fdBlock(fd, false);
-
-        var text_buffer = std.ArrayList(std.ArrayList(u8)){};
-        defer {
-            for (text_buffer.items) |*item| {
-                item.deinit(allocator);
-            }
-            text_buffer.deinit(allocator);
-        }
-        try text_buffer.append(allocator, .{});
-
-        var text_arr = std.ArrayList(sdl3.render.Texture){};
-        defer {
-            for (text_arr.items) |text| {
-                text.deinit();
-            }
-            text_arr.deinit(allocator);
-        }
-
-        try sdl3.keyboard.startTextInput(window);
-
-        var quit = false;
-        while (!quit) {
-            while (sdl3.events.poll()) |e| {
-                switch (e) {
-                    .quit => quit = true,
-                    .terminating => quit = true,
-                    .text_input => |input| {
-                        try shellWrite(input.text, fd);
-                    },
-                    .key_down => |keyboard| {
-                        if (keyboard.key) |key| {
-                            switch (key) {
-                                .escape => quit = true,
-                                .return_key => try shellWrite("\n", fd),
-                                .backspace => try shellWrite("\x7F", fd),
-                                else => {},
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-
-            if (try shellRead(allocator, &text_buffer, fd)) {
-                try genText(
-                    allocator,
-                    font,
-                    renderer,
-                    &text_buffer,
-                    &text_arr,
-                );
-            }
-
-            // Render
-            try renderer.setDrawColor(Colors.black().toPixels());
-            try renderer.clear();
-
-            for (text_arr.items, 0..) |text, i| {
-                try renderer.renderTexture(
-                    text,
-                    null,
-                    .{
-                        .x = 0.0,
-                        .y = 0.0 + @as(f32, @floatFromInt(i)) * @as(f32, @floatFromInt(text.getHeight())),
-                        .w = @floatFromInt(text.getWidth()),
-                        .h = @floatFromInt(text.getHeight()),
-                    }
-                );
-            }
-
-            try renderer.present();
-        }
-
-        try sdl3.keyboard.stopTextInput(window);
+        try master(allocator, fd);
     }
 }
