@@ -51,10 +51,12 @@ fn shellRead(
         for (read) |c| {
             const buf_end = &buf.items[buf.items.len - 1];
             // Check 'line feed' or 'carriage return'
-            if (c == '\x0a' or c == '\x0d') {
+            if (c == '\x0a') {
                 try buf.append(allocator, .{});
                 continue;
             }
+            // TODO: Check this
+            if (c == '\x0d') continue;
             // Backspace
             if (c == '\x08') {
                 _ = buf_end.pop();
@@ -79,7 +81,9 @@ fn genText(
     }
     textures.clearAndFree(allocator);
 
-    for (text_buf.items) |*line| {
+    const boundary = text_buf.items.len - @min(32, text_buf.items.len);
+
+    for (text_buf.items[boundary..]) |*line| {
         if (line.items.len == 0) continue;
         const surface = try font.renderTextBlended(line.items, Colors.white().toTTF());
         const texture = try renderer.createTextureFromSurface(surface);
