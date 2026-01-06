@@ -3,7 +3,7 @@ const std = @import("std");
 const colors = @import("colors.zig");
 const pty = @import("pty.zig");
 const shell = @import("shell.zig");
-const GlyphMap = @import("font.zig").GlyphMap;
+const GlyphMap = @import("GlyphMap.zig");
 
 const Allocator = std.mem.Allocator;
 const Colors = colors.Colors;
@@ -48,6 +48,8 @@ const Cursor = struct {
 };
 
 fn slave(allocator: Allocator) !void {
+    // Abandon hope all ye who enter here
+    // Defers don't work here
     const args = [_:null]?[*:0]const u8{
         "bash".ptr,
         "--norc".ptr,
@@ -55,11 +57,12 @@ fn slave(allocator: Allocator) !void {
     };
 
     var envmap = try std.process.getEnvMap(allocator);
+    try envmap.put("TERM", "dumb");
+
     const env = try std.process.createNullDelimitedEnvMap(
         allocator,
         &envmap,
     );
-    defer allocator.free(env);
     envmap.deinit();
 
     std.posix.execvpeZ(
@@ -113,14 +116,6 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
     }
     try text_buffer.append(allocator, .{});
 
-    var text_arr = std.ArrayList(sdl3.render.Texture){};
-    defer {
-        for (text_arr.items) |text| {
-            text.deinit();
-        }
-        text_arr.deinit(allocator);
-    }
-
     try sdl3.keyboard.startTextInput(window);
 
     const glyph_zero = try glyph_map.getTexture(0x30) orelse return;
@@ -128,6 +123,14 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
         glyph_zero.getWidth(),
         glyph_zero.getHeight()
     );
+
+    var back_texture = try sdl3.render.Texture.init(
+        renderer,
+        .array_rgba_32,
+        .target,
+        1, 1,
+    );
+    defer back_texture.deinit();
 
     var quit = false;
     while (!quit) {
@@ -141,7 +144,6 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
                 .key_down => |keyboard| {
                     if (keyboard.key) |key| {
                         switch (key) {
-                            .escape => quit = true,
                             .return_key => try shell.write("\n", fd),
                             .backspace => try shell.write("\x7F", fd),
                             else => {},
@@ -152,44 +154,94 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
             }
         }
 
-        if (try shell.read(allocator, &text_buffer, fd)) {
-        }
+        const resized = try resizeTextureToWindow(
+            window,
+            renderer,
+            &back_texture
+        );
 
-        // Render
-        try renderer.setDrawColor(Colors.black().toPixels());
-        try renderer.clear();
+        if (try shell.read(allocator, &text_buffer, fd) or resized) {
+            cursor.move(0, 0);
 
-        cursor.move(0, 0);
+            _, const window_height = try window.getSize();
+            const display_boundary = @divFloor(window_height, cursor.height) - 1;
 
-        _, const window_height = try window.getSize();
-        const display_boundary = @divFloor(window_height, cursor.height) - 1;
+            try renderer.setTarget(back_texture);
+            try renderer.setDrawColor(Colors.black().toPixels());
+            try renderer.clear();
 
-        for (text_buffer.items, 0..) |line, i| {
-            if (i + display_boundary < text_buffer.items.len) continue;
-            defer cursor.newline();
+            try renderer.setDrawColor(Colors.white().toPixels());
 
-            for (line.items) |c| {
-                defer cursor.next();
+            for (text_buffer.items, 0..) |line, i| {
+                if (i + display_boundary < text_buffer.items.len) continue;
+                defer cursor.newline();
 
-                const texture = try glyph_map.getTexture(c) orelse continue;
+                var utf8_view = std.unicode.Utf8View.init(line.items) catch {
+                    std.log.err("Invalid utf8", .{});
+                    continue;
+                };
+                var utf8_iter = utf8_view.iterator();
 
-                try renderer.renderTexture(
-                    texture,
-                    null,
-                    .{
-                        .x = @floatFromInt(cursor.x * cursor.width),
-                        .y = @floatFromInt(cursor.y * cursor.height),
-                        .w = @floatFromInt(texture.getWidth()),
-                        .h = @floatFromInt(texture.getHeight()),
-                    }
-                );
+                while (utf8_iter.nextCodepoint()) |c| {
+                    defer cursor.next();
+
+                    const texture = try glyph_map.getTexture(@intCast(c))
+                        orelse continue;
+
+                    try renderer.renderTexture(
+                        texture,
+                        null,
+                        .{
+                            .x = @floatFromInt(cursor.x * cursor.width),
+                            .y = @floatFromInt(cursor.y * cursor.height),
+                            .w = @floatFromInt(texture.getWidth()),
+                            .h = @floatFromInt(texture.getHeight()),
+                        }
+                    );
+                }
             }
+
+            try renderer.setTarget(null);
         }
 
+        try renderer.renderTexture(back_texture, null, null);
         try renderer.present();
     }
 
     try sdl3.keyboard.stopTextInput(window);
+}
+
+// Returns true if texture got resized
+fn resizeTextureToWindow(
+    window: sdl3.video.Window,
+    renderer: sdl3.render.Renderer,
+    texture: *sdl3.render.Texture
+) !bool {
+    const window_width, const window_height = try window.getSize();
+
+    if (
+        texture.getWidth() != window_width or
+        texture.getHeight() != window_height
+    ) {
+        const old_texture_format = texture.getFormat() orelse {
+            return error.NoTextureFormat;
+        };
+        const old_texture_access = (try texture.getProperties()).access
+            orelse return error.NoTextureAccess;
+
+        texture.deinit();
+        texture.* = try sdl3.render.Texture.init(
+            renderer,
+            old_texture_format,
+            old_texture_access,
+            window_width,
+            window_height,
+        );
+
+        return true;
+    }
+
+    return false;
 }
 
 pub fn main() !void {

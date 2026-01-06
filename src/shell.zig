@@ -46,10 +46,14 @@ pub fn read(
                 continue;
             }
             // TODO: Check this
-            if (c == '\x0d') continue;
+            //if (c == '\x0d') continue;
             // Backspace
+
             if (c == '\x08') {
-                _ = buf_end.pop();
+                const last = buf_end.pop() orelse break;
+                _ = std.unicode.utf8ByteSequenceLength(last) catch {
+                    try write("\x7F", fd);
+                };
                 continue;
             }
             try buf_end.append(allocator, c);

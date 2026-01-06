@@ -1,12 +1,19 @@
 .{
     .name = .spike,
-    .version = "0.15.2",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0xefb81a8a0216b609, // Changing this has security and trust implications.
+
     .dependencies = .{
         .sdl3 = .{
             .url = "git+https://codeberg.org/7Games/zig-sdl3#014b7bcb2899f3ed9c945c4abfcfe1b25d75bfeb",
             .hash = "sdl3-0.1.5-NmT1QxARJgAH1Wp0cMBJDAc9vD7weufTkIwVa5rehA2q",
         },
     },
-    .paths = .{""},
-    .fingerprint = 0xefb81a8a77baa4b2,
+    
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
 }
