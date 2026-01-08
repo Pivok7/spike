@@ -3,10 +3,12 @@ const std = @import("std");
 const colors = @import("colors.zig");
 const pty = @import("pty.zig");
 const shell = @import("shell.zig");
+const utf8 = @import("utf8.zig");
 const GlyphMap = @import("GlyphMap.zig");
 
 const Allocator = std.mem.Allocator;
 const Colors = colors.Colors;
+const utf8Iterator = utf8.utf8Iterator;
 
 const default_font = @embedFile("fonts/Hack-Regular.ttf");
 const default_font_size = 16.0;
@@ -72,7 +74,11 @@ fn slave(allocator: Allocator) !void {
     ) catch {};
 }
 
-fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
+fn master(
+    allocator: Allocator,
+    fd: std.posix.fd_t,
+    child_pid: std.posix.pid_t,
+) !void {
     defer sdl3.shutdown();
 
     // Initialize SDL with subsystems you need here.
@@ -154,6 +160,9 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
             }
         }
 
+        // Listen to shell exit signal
+        if (!try pty.waitPid(child_pid)) quit = true;
+
         const resized = try resizeTextureToWindow(
             window,
             renderer,
@@ -176,11 +185,7 @@ fn master(allocator: Allocator, fd: std.posix.fd_t) !void {
                 if (i + display_boundary < text_buffer.items.len) continue;
                 defer cursor.newline();
 
-                var utf8_view = std.unicode.Utf8View.init(line.items) catch {
-                    std.log.err("Invalid utf8", .{});
-                    continue;
-                };
-                var utf8_iter = utf8_view.iterator();
+                var utf8_iter = utf8Iterator.init(line.items);
 
                 while (utf8_iter.nextCodepoint()) |c| {
                     defer cursor.next();
@@ -258,6 +263,6 @@ pub fn main() !void {
     } else {
         const fd = res.master;
         try pty.fdBlock(fd, false);
-        try master(allocator, fd);
+        try master(allocator, fd, res.slave);
     }
 }

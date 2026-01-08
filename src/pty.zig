@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("pty.h");
     @cInclude("fcntl.h");
+    @cInclude("sys/wait.h");
 });
 
 pub fn fdBlock(fd: std.posix.fd_t, block: bool) !void {
@@ -16,7 +17,7 @@ pub fn fdBlock(fd: std.posix.fd_t, block: bool) !void {
 
 pub fn forkpty() !struct{
     master: std.posix.fd_t,
-    slave: std.posix.fd_t,
+    slave: std.posix.pid_t,
 } {
     var master: std.posix.fd_t = undefined;
     const slave = c.forkpty(
@@ -34,4 +35,12 @@ pub fn forkpty() !struct{
         .master = master,
         .slave = @intCast(slave),
     };
+}
+
+/// Returns true if exited
+pub fn waitPid(pid: std.posix.pid_t) !bool {
+    const res =  std.posix.waitpid(pid, c.WNOHANG);
+
+    if (res.pid == -1) return error.WaitPidFail;
+    return (res.pid == 0);
 }
