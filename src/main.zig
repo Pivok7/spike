@@ -151,7 +151,8 @@ fn master(
                     if (keyboard.key) |key| {
                         switch (key) {
                             .return_key => try shell.write("\n", fd),
-                            .backspace => try shell.write("\x7F", fd),
+                            .backspace => try shell.write("\x7f", fd),
+                            .tab => try shell.write("\x09", fd),
                             else => {},
                         }
                     }
@@ -172,8 +173,9 @@ fn master(
         if (try shell.read(allocator, &text_buffer, fd) or resized) {
             cursor.move(0, 0);
 
-            _, const window_height = try window.getSize();
-            const display_boundary = @divFloor(window_height, cursor.height) - 1;
+            const window_width, const window_height = try window.getSize();
+            const window_rows = @divFloor(window_height, cursor.height);
+            const window_cols = @divFloor(window_width, cursor.width);
 
             try renderer.setTarget(back_texture);
             try renderer.setDrawColor(Colors.black().toPixels());
@@ -182,16 +184,19 @@ fn master(
             try renderer.setDrawColor(Colors.white().toPixels());
 
             for (text_buffer.items, 0..) |line, i| {
-                if (i + display_boundary < text_buffer.items.len) continue;
+                if (i + window_rows < text_buffer.items.len) continue;
                 defer cursor.newline();
 
                 var utf8_iter = utf8Iterator.init(line.items);
 
                 while (utf8_iter.nextCodepoint()) |c| {
-                    defer cursor.next();
+                    // Skip carriage return and bell
+                    if (c == '\x0d' or c == '\x07') continue;
 
-                    const texture = try glyph_map.getTexture(@intCast(c))
+                    var texture = try glyph_map.getTexture(@intCast(c))
                         orelse continue;
+
+                    if (cursor.x >= window_cols) cursor.newline();
 
                     try renderer.renderTexture(
                         texture,
@@ -203,6 +208,19 @@ fn master(
                             .h = @floatFromInt(texture.getHeight()),
                         }
                     );
+
+                    //try renderer.renderTexture(
+                    //    (try glyph_map.getTexture(@intCast('_'))).?,
+                    //    null,
+                    //    .{
+                    //        .x = @floatFromInt(cursor.x * cursor.width),
+                    //        .y = @floatFromInt(cursor.y * cursor.height + 1),
+                    //        .w = @floatFromInt(texture.getWidth()),
+                    //        .h = @floatFromInt(texture.getHeight()),
+                    //    }
+                    //);
+
+                    cursor.next();
                 }
             }
 
