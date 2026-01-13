@@ -122,6 +122,13 @@ fn master(
     }
     try text_buffer.append(allocator, .{});
 
+    var line_buffer = std.ArrayList([]const u8){};
+    defer line_buffer.deinit(allocator);
+
+    var scroll: usize = 0;
+
+    var redraw: bool = false;
+
     try sdl3.keyboard.startTextInput(window);
 
     const glyph_zero = try glyph_map.getTexture(0x30) orelse return;
@@ -153,6 +160,16 @@ fn master(
                             .return_key => try shell.write("\n", fd),
                             .backspace => try shell.write("\x7f", fd),
                             .tab => try shell.write("\x09", fd),
+
+                            .up => {
+                                scroll += 1;
+                                redraw = true;
+                            },
+                            .down => {
+                                scroll -= @min(scroll, 1);
+                                redraw = true;
+                            },
+
                             else => {},
                         }
                     }
@@ -171,6 +188,13 @@ fn master(
         );
 
         if (try shell.read(allocator, &text_buffer, fd) or resized) {
+            redraw = true;
+        }
+
+        if (redraw) {
+            defer redraw = false;
+
+            line_buffer.clearRetainingCapacity();
             cursor.move(0, 0);
 
             const window_width, const window_height = try window.getSize();
@@ -183,11 +207,64 @@ fn master(
 
             try renderer.setDrawColor(Colors.white().toPixels());
 
-            for (text_buffer.items, 0..) |line, i| {
-                if (i + window_rows < text_buffer.items.len) continue;
+            var i: usize = text_buffer.items.len;
+            while (i > 0) : (i -= 1) {
+                if (line_buffer.items.len >= window_rows + scroll) break;
+
+                const line = text_buffer.items[i - 1].items;
+                cursor.move(0, 0);
+
+                var utf8_iter = utf8Iterator.init(line);
+
+                var apos: usize = 0;
+                var bpos: usize = 0;
+                while (utf8_iter.nextCodepoint()) |c| : (bpos += 1) {
+                    // Skip carriage return and bell
+                    if (c == '\x0d' or c == '\x07') continue;
+
+                    _ = try glyph_map.getTexture(@intCast(c))
+                        orelse continue;
+
+                    if (cursor.x >= window_cols) {
+                        cursor.newline();
+                        try line_buffer.append(
+                            allocator,
+                            line[apos..bpos]
+                        );
+                        apos = bpos;
+                    }
+
+                    cursor.next();
+                }
+
+                cursor.newline();
+                try line_buffer.append(
+                    allocator,
+                    line[apos..bpos]
+                );
+                apos = bpos;
+
+                const lb_last = line_buffer.items.len;
+                std.mem.reverse([]const u8, line_buffer.items[(lb_last-cursor.y)..]);
+            }
+
+            scroll = @min(line_buffer.items.len, scroll);
+//            scroll -= @max(line_buffer.items.len, window_rows) - window_rows;
+
+            // Cut lines to window height
+            line_buffer.shrinkRetainingCapacity(
+                @min(window_rows + scroll, line_buffer.items.len)
+            );
+            std.mem.reverse([]const u8, line_buffer.items);
+            line_buffer.shrinkRetainingCapacity(
+                @min(window_rows, line_buffer.items.len)
+            );
+            cursor.move(0, 0);
+
+            for (line_buffer.items) |line| {
                 defer cursor.newline();
 
-                var utf8_iter = utf8Iterator.init(line.items);
+                var utf8_iter = utf8Iterator.init(line);
 
                 while (utf8_iter.nextCodepoint()) |c| {
                     // Skip carriage return and bell
@@ -195,8 +272,6 @@ fn master(
 
                     var texture = try glyph_map.getTexture(@intCast(c))
                         orelse continue;
-
-                    if (cursor.x >= window_cols) cursor.newline();
 
                     try renderer.renderTexture(
                         texture,
