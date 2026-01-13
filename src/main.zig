@@ -11,7 +11,7 @@ const Colors = colors.Colors;
 const utf8Iterator = utf8.utf8Iterator;
 
 const default_font = @embedFile("fonts/Hack-Regular.ttf");
-const default_font_size = 16.0;
+const default_font_size = 24.0;
 
 const screen_width = 800;
 const screen_height = 600;
@@ -126,8 +126,10 @@ fn master(
     defer line_buffer.deinit(allocator);
 
     var scroll: usize = 0;
-
+    var follow_output: bool = true;
     var redraw: bool = false;
+
+    _ = &follow_output;
 
     try sdl3.keyboard.startTextInput(window);
 
@@ -192,7 +194,7 @@ fn master(
         }
 
         if (redraw) {
-            defer redraw = false;
+            redraw = false;
 
             line_buffer.clearRetainingCapacity();
             cursor.move(0, 0);
@@ -207,49 +209,19 @@ fn master(
 
             try renderer.setDrawColor(Colors.white().toPixels());
 
-            var i: usize = text_buffer.items.len;
-            while (i > 0) : (i -= 1) {
-                if (line_buffer.items.len >= window_rows + scroll) break;
-
-                const line = text_buffer.items[i - 1].items;
-                cursor.move(0, 0);
-
-                var utf8_iter = utf8Iterator.init(line);
-
-                var apos: usize = 0;
-                var bpos: usize = 0;
-                while (utf8_iter.nextCodepoint()) |c| : (bpos += 1) {
-                    // Skip carriage return and bell
-                    if (c == '\x0d' or c == '\x07') continue;
-
-                    _ = try glyph_map.getTexture(@intCast(c))
-                        orelse continue;
-
-                    if (cursor.x >= window_cols) {
-                        cursor.newline();
-                        try line_buffer.append(
-                            allocator,
-                            line[apos..bpos]
-                        );
-                        apos = bpos;
-                    }
-
-                    cursor.next();
-                }
-
-                cursor.newline();
-                try line_buffer.append(
+            if (follow_output) {
+                try prepareTextFollow(
                     allocator,
-                    line[apos..bpos]
+                    &text_buffer,
+                    &line_buffer,
+                    window_cols,
+                    window_rows,
+                    &cursor,
+                    &glyph_map,
                 );
-                apos = bpos;
-
-                const lb_last = line_buffer.items.len;
-                std.mem.reverse([]const u8, line_buffer.items[(lb_last-cursor.y)..]);
             }
 
-            scroll = @min(line_buffer.items.len, scroll);
-//            scroll -= @max(line_buffer.items.len, window_rows) - window_rows;
+            scroll = @min(5, scroll);
 
             // Cut lines to window height
             line_buffer.shrinkRetainingCapacity(
@@ -340,6 +312,60 @@ fn resizeTextureToWindow(
     }
 
     return false;
+}
+
+fn prepareTextFollow(
+    allocator: Allocator,
+    text_buffer: *const std.ArrayList(std.ArrayList(u8)),
+    line_buffer: *std.ArrayList([]const u8),
+    cols: usize,
+    rows: usize,
+    cursor: *Cursor,
+    glyph_map: *GlyphMap,
+) !void {
+    var i: usize = text_buffer.items.len;
+    while (i > 0) : (i -= 1) {
+        if (line_buffer.items.len >= rows) break;
+
+        const line = text_buffer.items[i - 1].items;
+        cursor.move(0, 0);
+
+        var utf8_iter = utf8Iterator.init(line);
+
+        var apos: usize = 0;
+        var bpos: usize = 0;
+        while (utf8_iter.nextCodepoint()) |c| : (bpos += 1) {
+            // Skip carriage return and bell
+            if (c == '\x0d' or c == '\x07') continue;
+
+            _ = try glyph_map.getTexture(@intCast(c))
+                orelse continue;
+
+            if (cursor.x >= cols) {
+                cursor.newline();
+                try line_buffer.append(
+                    allocator,
+                    line[apos..bpos]
+                );
+                apos = bpos;
+            }
+
+            cursor.next();
+        }
+
+        cursor.newline();
+        try line_buffer.append(
+            allocator,
+            line[apos..bpos]
+        );
+        apos = bpos;
+
+        const lb_last = line_buffer.items.len;
+        std.mem.reverse(
+            []const u8,
+            line_buffer.items[(lb_last - cursor.y)..]
+        );
+    }
 }
 
 pub fn main() !void {

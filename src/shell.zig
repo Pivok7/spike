@@ -41,9 +41,6 @@ pub fn read(
         for (r) |c| {
             const buf_end = &buf.items[buf.items.len - 1];
             // Check 'line feed' or 'carriage return'
-            if (c == '\x09') {
-                std.debug.print("fsdko\n", .{});
-            }
             if (c == '\x0a') {
                 try buf.append(allocator, .{});
                 continue;
