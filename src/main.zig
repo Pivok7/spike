@@ -128,8 +128,7 @@ fn master(
     var scroll: usize = 0;
     var follow_output: bool = true;
     var redraw: bool = false;
-
-    _ = &follow_output;
+    var u: usize = 0;
 
     try sdl3.keyboard.startTextInput(window);
 
@@ -209,8 +208,12 @@ fn master(
 
             try renderer.setDrawColor(Colors.white().toPixels());
 
+            scroll = @min(u, scroll);
+
+            follow_output = (scroll == 0);
+
             if (follow_output) {
-                try prepareTextFollow(
+                u = try prepareTextFollow(
                     allocator,
                     &text_buffer,
                     &line_buffer,
@@ -219,18 +222,24 @@ fn master(
                     &cursor,
                     &glyph_map,
                 );
+            } else {
+                try prepareTextScroll(
+                    allocator,
+                    &text_buffer,
+                    &line_buffer,
+                    window_cols,
+                    window_rows,
+                    &cursor,
+                    &glyph_map,
+                    u - scroll,
+                );
             }
-
-            scroll = @min(5, scroll);
 
             // Cut lines to window height
             line_buffer.shrinkRetainingCapacity(
-                @min(window_rows + scroll, line_buffer.items.len)
-            );
-            std.mem.reverse([]const u8, line_buffer.items);
-            line_buffer.shrinkRetainingCapacity(
                 @min(window_rows, line_buffer.items.len)
             );
+            if (follow_output) std.mem.reverse([]const u8, line_buffer.items);
             cursor.move(0, 0);
 
             for (line_buffer.items) |line| {
@@ -322,7 +331,7 @@ fn prepareTextFollow(
     rows: usize,
     cursor: *Cursor,
     glyph_map: *GlyphMap,
-) !void {
+) !usize {
     var i: usize = text_buffer.items.len;
     while (i > 0) : (i -= 1) {
         if (line_buffer.items.len >= rows) break;
@@ -366,13 +375,63 @@ fn prepareTextFollow(
             line_buffer.items[(lb_last - cursor.y)..]
         );
     }
+
+    return i;
+}
+
+fn prepareTextScroll(
+    allocator: Allocator,
+    text_buffer: *const std.ArrayList(std.ArrayList(u8)),
+    line_buffer: *std.ArrayList([]const u8),
+    cols: usize,
+    rows: usize,
+    cursor: *Cursor,
+    glyph_map: *GlyphMap,
+    line_index: usize,
+) !void {
+    var i: usize = line_index;
+    while (i < text_buffer.items.len) : (i += 1) {
+        if (line_buffer.items.len >= rows) break;
+
+        const line = text_buffer.items[i].items;
+        cursor.move(0, 0);
+
+        var utf8_iter = utf8Iterator.init(line);
+
+        var apos: usize = 0;
+        var bpos: usize = 0;
+        while (utf8_iter.nextCodepoint()) |c| : (bpos += 1) {
+            // Skip carriage return and bell
+            if (c == '\x0d' or c == '\x07') continue;
+
+            _ = try glyph_map.getTexture(@intCast(c))
+                orelse continue;
+
+            if (cursor.x >= cols) {
+                cursor.newline();
+                try line_buffer.append(
+                    allocator,
+                    line[apos..bpos]
+                );
+                apos = bpos;
+            }
+
+            cursor.next();
+        }
+
+        cursor.newline();
+        try line_buffer.append(
+            allocator,
+            line[apos..bpos]
+        );
+        apos = bpos;
+    }
 }
 
 pub fn main() !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-
 
     // PTY
     const res = try pty.forkpty();

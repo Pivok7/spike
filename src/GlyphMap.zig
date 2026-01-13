@@ -49,7 +49,7 @@ pub fn getTexture(self: *Self, codepoint: u32) !?sdl3.render.Texture {
 
         try self.map.putNoClobber(codepoint, glyph_texture);
 
-        std.debug.print("Loaded glyph {s}\n", .{utf8_c});
+        //std.debug.print("Loaded glyph {s}\n", .{utf8_c});
 
         return glyph_texture;
     }
