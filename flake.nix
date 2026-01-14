@@ -26,6 +26,9 @@
           libGL
           libxkbcommon
           wayland
+
+	  # Needed for proper bash
+          bashInteractive
         ];
       in
       {

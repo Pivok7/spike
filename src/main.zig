@@ -51,7 +51,7 @@ const Cursor = struct {
 
 fn slave(allocator: Allocator) !void {
     // Abandon hope all ye who enter here
-    // Defers don't work here
+    // (btw defers don't work here)
     const args = [_:null]?[*:0]const u8{
         "bash".ptr,
         "--norc".ptr,
