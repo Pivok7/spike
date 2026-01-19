@@ -1,55 +1,43 @@
 {
-  description = "spike flake";
-
+  description = "SDL3 project flake";
   inputs = {
-    zig2nix.url = "github:Pivok7/zig2nix";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs =
-    { zig2nix, self, ... }:
-    let
-      flake-utils = zig2nix.inputs.flake-utils;
-    in
-    (flake-utils.lib.eachDefaultSystem (
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
       system:
       let
-        # Zig flake helper
-        # Check the flake.nix in zig2nix project for more options:
-        # <https://github.com/Cloudef/zig2nix/blob/master/flake.nix>
-        env = zig2nix.outputs.zig-env.${system} { zig = zig2nix.outputs.packages.${system}.zig-0_15_2; };
-        pkgs = env.pkgs;
-      in
-      rec {
-        packages.default = env.package rec {
-          name = "spike";
-
-          src = self;
-
-          nativeBuildInputs = with env.pkgs; [
-          ];
-
-          buildInputs = with env.pkgs; [
-            libGL
-            libxkbcommon
-            wayland
-          ];
-
-          zigWrapperLibs = buildInputs;
-
-          zigBuildZonLock = ./build.zig.zon2json-lock;
-
-          zigBuildFlags = [ "-Doptimize=Debug" ];
+        pkgs = import nixpkgs {
+          inherit system;
         };
 
-        devShells.default = env.mkShell {
-          # Packages required for compiling, linking and running
-          # Libraries added here will be automatically added to the LD_LIBRARY_PATH and PKG_CONFIG_PATH
-          nativeBuildInputs =
-            [ ]
-            ++ packages.default.nativeBuildInputs
-            ++ packages.default.buildInputs
-            ++ packages.default.zigWrapperLibs;
+        _nativeBuildInputs = with pkgs; [
+          zig_0_15
+        ];
+
+        _buildInputs = with pkgs; [
+          libGL
+          libxkbcommon
+          wayland
+
+	  # Needed for proper bash
+          bashInteractive
+        ];
+      in
+      {
+        devShells.default = pkgs.mkShell rec {
+          nativeBuildInputs = _nativeBuildInputs;
+          buildInputs = _buildInputs;
+
+          LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         };
       }
-    ));
+    );
 }
